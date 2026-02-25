@@ -29,6 +29,20 @@ class ImageClassifier(nn.Module):
             self.backbone = clip_model
             self.in_features = 512
             self.head = nn.Sequential(nn.Dropout(0.2), nn.Linear(self.in_features, output_dim))
+        #fine-tuned ViT-L/14 with MONET weights: GG
+        elif self.backbone_type == "monet_ViT-L/14":
+            clip_model = clip.load("ViT-L/14", jit=False)[0]
+            # Load MONET weights
+            state_dict = torch.hub.load_state_dict_from_url(
+                "https://aimslab.cs.washington.edu/MONET/weight_clip.pt",
+                map_location="cpu"
+            )
+            clip_model.load_state_dict(state_dict)
+            for params in clip_model.parameters():
+                params.requires_grad = False  # freeze backbone
+            self.backbone = clip_model
+            self.in_features = 768  # ViT-L/14 output dim
+            self.head = nn.Sequential(nn.Dropout(0.2), nn.Linear(self.in_features, output_dim))
 
     def forward(self, x):
         if self.backbone_type == "efficientnet_v2_s":
@@ -39,7 +53,10 @@ class ImageClassifier(nn.Module):
             image_features = self.backbone.encode_image(x)
             logits = self.head(image_features.float())
             return logits
-
+        elif self.backbone_type == "monet_ViT-L/14":
+            image_features = self.backbone.encode_image(x)
+            logits = self.head(image_features.float())
+            return logits
 
 if __name__ == "__main__":
     net = ImageClassifier(backbone_type="ViT-B/32", output_dim=48)

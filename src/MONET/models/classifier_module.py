@@ -7,6 +7,7 @@ import torch.nn as nn
 # import vit_shapley.modules.vision_transformer_verbose as vit
 from torchvision import models as cnn_models
 
+import clip
 from MONET.models import classifier_utils
 
 
@@ -56,6 +57,19 @@ class ClassifierLitModule(pl.LightningModule):
         if self.hparams.backbone_type == "resnet50":
             if self.hparams.download_weight:
                 self.backbone = cnn_models.resnet50(weights="ResNet50_Weights.IMAGENET1K_V1")
+            else:
+                self.backbone = cnn_models.resnet50()
+        elif self.hparams.backbone_type == "monet_ViT-L/14":
+            clip_model = clip.load("ViT-L/14", jit=False)[0]
+            if self.hparams.download_weight:
+                state_dict = torch.hub.load_state_dict_from_url(
+                    "https://aimslab.cs.washington.edu/MONET/weight_clip.pt",
+                    map_location="cpu",
+                )
+                clip_model.load_state_dict(state_dict)
+            for params in clip_model.parameters():
+                params.requires_grad = False  # freeze backbone
+            self.backbone = clip_model
         else:
             raise NotImplementedError("Not supported backbone type")
 
@@ -77,6 +91,9 @@ class ClassifierLitModule(pl.LightningModule):
         elif self.backbone.__class__.__name__ == "DenseNet":
             head_in_features = self.backbone.classifier.in_features
             self.backbone.classifier = nn.Identity()
+        elif self.backbone.__class__.__name__ == "CLIP":
+            head_in_features = 768  # ViT-L/14 output dim
+            self.head = nn.Sequential(nn.Dropout(0.2), nn.Linear(head_in_features, self.hparams.output_dim))
         else:
             raise NotImplementedError("Not supported backbone type")
 
@@ -100,6 +117,12 @@ class ClassifierLitModule(pl.LightningModule):
         elif self.backbone.__class__.__name__ == "ResNet":
             out = self.backbone(images)
             logits = self.head(out)
+            output = {"logits": logits}
+        elif self.backbone.__class__.__name__ == "CLIP":
+            image_features = self.backbone.encode_image(images)
+            logits = self.head(image_features.float())
+            if self.hparams.output_dim == 1:
+                logits = logits.squeeze(-1)
             output = {"logits": logits}
         else:
             raise NotImplementedError("Not supported backbone type")

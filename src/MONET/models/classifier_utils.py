@@ -11,7 +11,7 @@ from torchmetrics import (
 )
 from transformers import get_cosine_schedule_with_warmup
 from transformers.optimization import AdamW
-
+from sklearn.metrics import roc_auc_score
 
 def set_schedule(pl_module):
     optimizer = None
@@ -222,6 +222,9 @@ def epoch_wrapup(pl_module, phase):
         auroc = getattr(pl_module, f"{phase}_auroc").compute()
         getattr(pl_module, f"{phase}_auroc").reset()
         pl_module.log(f"{phase}/epoch_auroc", auroc)
+        
+        pauc = roc_auc_score(labels.cpu().numpy(), torch.sigmoid(logits).cpu().numpy(), max_fpr=0.2)
+        pl_module.log(f"{phase}/epoch_pauc", pauc)
 
     elif pl_module.hparams.target_type == "multiclass":
         loss = getattr(pl_module, f"{phase}_loss").compute()
@@ -336,6 +339,9 @@ def compute_metrics(pl_module, logits, labels, phase):
 
         auroc = getattr(pl_module, f"{phase}_auroc")(torch.sigmoid(logits), labels)
         pl_module.log(f"{phase}/auroc", auroc)
+        
+        pauc = roc_auc_score(labels.cpu().numpy(), torch.sigmoid(logits).cpu().numpy(), max_fpr=0.2)
+        pl_module.log(f"{phase}/pauc", pauc)
 
     elif pl_module.hparams.target_type == "multiclass":
         # import ipdb

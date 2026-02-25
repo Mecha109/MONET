@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from torch.utils.data import DataLoader, Dataset, random_split
 
 from MONET.datamodules.components.base_dataset import BaseDataset
@@ -1429,6 +1429,123 @@ def setup_proveai(
     )
 
     data_all.concept_prompt_dict = concept_prompt_dict
+
+    return data_train, data_val, data_test, data_all
+
+
+def setup_isic2024(
+    data_dir,
+    n_px,
+    norm_mean,
+    norm_std,
+    split_seed,
+    image_dir=None,
+):
+    """Setup ISIC 2024 dataset with patient-aware train/val split.
+
+    Uses GroupShuffleSplit so that all images from the same patient
+    end up in the same split, preventing data leakage.
+
+    Args:
+        data_dir: Path to directory containing final_metadata_all.csv and image_dict.pkl
+        image_dir: Path to directory containing the actual image files. If None,
+                   defaults to data_dir / "final_image"
+        n_px: Image resolution (pixels)
+        norm_mean: Normalization mean
+        norm_std: Normalization std
+        split_seed: Random seed for reproducible splits
+    """
+    # Load image dict
+    image_dict = load_pkl(
+        Path(data_dir) / "image_dict.pkl",
+        field="images",
+        verbose=True,
+    )
+
+    if image_dir is None:
+        image_dir = Path(data_dir) / "final_image"
+    else:
+        image_dir = Path(image_dir)
+
+    image_dict_ = OrderedDict()
+    for k, v in image_dict.items():
+        image_dict_[k] = str(image_dir / v)
+    image_dict = image_dict_
+
+    # Load metadata
+    text_df = pd.read_csv(
+        Path(data_dir) / "final_metadata_all.csv", low_memory=False
+    ).set_index("isic_id")
+
+    # Keep only samples that have images
+    text_df = text_df[text_df.index.isin(image_dict.keys())]
+
+    # Binary classification label
+    return_label = ["target"]
+
+    # Patient-aware split: all images from the same patient stay together
+    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=split_seed)
+    groups = text_df["patient_id"]
+    train_mask, val_mask = next(gss.split(text_df, groups=groups))
+    train_idx = text_df.index[train_mask]
+    val_idx = text_df.index[val_mask]
+
+    # Verify no patient overlap
+    train_patients = set(text_df.loc[train_idx, "patient_id"])
+    val_patients = set(text_df.loc[val_idx, "patient_id"])
+    assert train_patients.isdisjoint(val_patients), (
+        "Patient leakage detected between train and val splits!"
+    )
+    print(
+        f"ISIC 2024 split: {len(train_idx)} train samples "
+        f"({len(train_patients)} patients), "
+        f"{len(val_idx)} val samples ({len(val_patients)} patients). "
+        f"No patient overlap."
+    )
+
+    data_train = BaseDataset(
+        image_path_or_binary_dict=image_dict,
+        n_px=n_px,
+        norm_mean=norm_mean,
+        norm_std=norm_std,
+        augment=True,
+        metadata_all=text_df.loc[train_idx, :],
+        integrity_level="weak",
+        return_label=return_label,
+    )
+
+    data_val = BaseDataset(
+        image_path_or_binary_dict=image_dict,
+        n_px=n_px,
+        norm_mean=norm_mean,
+        norm_std=norm_std,
+        augment=False,
+        metadata_all=text_df.loc[val_idx, :],
+        integrity_level="weak",
+        return_label=return_label,
+    )
+
+    data_test = BaseDataset(
+        image_path_or_binary_dict=image_dict,
+        n_px=n_px,
+        norm_mean=norm_mean,
+        norm_std=norm_std,
+        augment=False,
+        metadata_all=text_df.loc[val_idx, :],
+        integrity_level="weak",
+        return_label=return_label,
+    )
+
+    data_all = BaseDataset(
+        image_path_or_binary_dict=image_dict,
+        n_px=n_px,
+        norm_mean=norm_mean,
+        norm_std=norm_std,
+        augment=False,
+        metadata_all=text_df,
+        integrity_level="weak",
+        return_label=return_label,
+    )
 
     return data_train, data_val, data_test, data_all
 

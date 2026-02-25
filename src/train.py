@@ -38,7 +38,7 @@ import hydra
 import pytorch_lightning as pl
 from omegaconf import DictConfig
 from pytorch_lightning import Callback, LightningDataModule, LightningModule, Trainer
-from pytorch_lightning.loggers import LightningLoggerBase
+from pytorch_lightning.loggers import Logger
 
 from src import utils
 
@@ -115,7 +115,7 @@ def train(cfg: DictConfig) -> Tuple[dict, dict]:
     return metric_dict, object_dict
 
 
-@hydra.main(version_base="1.2", config_path=root / "configs", config_name="train.yaml")
+@hydra.main(version_base="1.2", config_path=str(root / "configs"), config_name="train.yaml")
 def main(cfg: DictConfig) -> Optional[float]:
 
     # train the model

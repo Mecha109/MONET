@@ -41,6 +41,7 @@ from pytorch_lightning import Callback, LightningDataModule, LightningModule, Tr
 from pytorch_lightning.loggers import Logger
 
 from src import utils
+from MONET.models.ml_classifiers import run_ml_classifiers
 
 log = utils.get_pylogger(__name__)
 
@@ -108,6 +109,24 @@ def train(cfg: DictConfig) -> Tuple[dict, dict]:
         log.info(f"Best ckpt path: {ckpt_path}")
 
     test_metrics = trainer.callback_metrics
+
+    # Run traditional ML classifiers on extracted backbone features
+    if cfg.get("test") and cfg.model.get("target_type") == "binary":
+        log.info("Running ML classifiers (RF, LightGBM, XGBoost, CatBoost)...")
+        import torch
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        datamodule.setup(stage="fit")
+        ml_results = run_ml_classifiers(
+            model=model,
+            datamodule=datamodule,
+            device=device,
+            target_type=cfg.model.target_type,
+            output_dir=cfg.paths.get("output_dir"),
+        )
+        # Add ML classifier metrics to the metric dict
+        for clf_name, clf_metrics in ml_results.items():
+            for metric_name, metric_value in clf_metrics.items():
+                test_metrics[f"{clf_name}/{metric_name}"] = metric_value
 
     # merge train and test metrics
     metric_dict = {**train_metrics, **test_metrics}

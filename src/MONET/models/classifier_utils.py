@@ -72,6 +72,9 @@ def set_metrics(pl_module, num_labels=None):
     for phase in ["train", "val", "test"]:
         if pl_module.hparams.target_type == "binary":
             setattr(pl_module, f"{phase}_loss", MeanMetric())
+            # Accumulators for epoch-level pAUC (sklearn needs raw data)
+            setattr(pl_module, f"{phase}_labels_list", [])
+            setattr(pl_module, f"{phase}_logits_list", [])
 
             setattr(pl_module, f"{phase}_accuracy", Accuracy(task="binary"))
             setattr(
@@ -222,9 +225,20 @@ def epoch_wrapup(pl_module, phase):
         auroc = getattr(pl_module, f"{phase}_auroc").compute()
         getattr(pl_module, f"{phase}_auroc").reset()
         pl_module.log(f"{phase}/epoch_auroc", auroc)
-        
-        pauc = roc_auc_score(labels.cpu().numpy(), torch.sigmoid(logits).cpu().numpy(), max_fpr=0.2)
-        pl_module.log(f"{phase}/epoch_pauc", pauc)
+
+        # Compute epoch-level pAUC from accumulated data
+        all_labels = torch.cat(getattr(pl_module, f"{phase}_labels_list")).numpy()
+        all_logits = torch.cat(getattr(pl_module, f"{phase}_logits_list")).numpy()
+        all_probs = torch.sigmoid(torch.tensor(all_logits)).numpy()
+        # sklearn's roc_auc_score with max_fpr normalizes pAUC to [0, 1] by default via McClish correction
+        # Multiply by max_fpr to get the raw partial AUC in [0, max_fpr] range
+        max_fpr = 0.2
+        pauc_normalized = roc_auc_score(all_labels, all_probs, max_fpr=max_fpr)
+        pauc_raw = pauc_normalized * max_fpr
+        pl_module.log(f"{phase}/epoch_pauc", pauc_raw)
+        # Reset accumulators
+        getattr(pl_module, f"{phase}_labels_list").clear()
+        getattr(pl_module, f"{phase}_logits_list").clear()
 
     elif pl_module.hparams.target_type == "multiclass":
         loss = getattr(pl_module, f"{phase}_loss").compute()
@@ -339,9 +353,10 @@ def compute_metrics(pl_module, logits, labels, phase):
 
         auroc = getattr(pl_module, f"{phase}_auroc")(torch.sigmoid(logits), labels)
         pl_module.log(f"{phase}/auroc", auroc)
-        
-        pauc = roc_auc_score(labels.cpu().numpy(), torch.sigmoid(logits).cpu().numpy(), max_fpr=0.2)
-        pl_module.log(f"{phase}/pauc", pauc)
+
+        # Accumulate for epoch-level pAUC
+        getattr(pl_module, f"{phase}_labels_list").append(labels.detach().cpu())
+        getattr(pl_module, f"{phase}_logits_list").append(logits.detach().cpu())
 
     elif pl_module.hparams.target_type == "multiclass":
         # import ipdb
@@ -423,7 +438,7 @@ def compute_metrics(pl_module, logits, labels, phase):
             )
             pl_module.log(f"{phase}/auroc", auroc)
 
-    if pl_module.hparams.target_type == "regression":
+    elif pl_module.hparams.target_type == "regression":
         # print(logits.shape, labels.shape)
         # print(logits.shape, labels.max(axis=1).values)
         # print(labels.max(axis=0).values)
